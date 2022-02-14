@@ -1,5 +1,5 @@
 package blockchains.iaas.uni.stuttgart.de.plugin.fabric; /*******************************************************************************
- * Copyright (c) 2019 Institute for the Architecture of Application System - University of Stuttgart
+ * Copyright (c) 2019-2022 Institute for the Architecture of Application System - University of Stuttgart
  * Author: Ghareeb Falazi
  *
  * This program and the accompanying materials are made available under the
@@ -76,7 +76,8 @@ public class FabricAdapter implements BlockchainAdapter {
             String functionIdentifier,
             List<Parameter> inputs,
             List<Parameter> outputs,
-            double requiredConfidence) throws BalException {
+            double requiredConfidence,
+            long timeoutMillis) throws BalException {
         if (outputs.size() > 1) {
             throw new ParameterException("Hyperledger Fabric supports only at most a single return value.");
         }
