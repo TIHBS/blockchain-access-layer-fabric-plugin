@@ -1,4 +1,4 @@
-package blockchains.iaas.uni.stuttgart.de.plugin.fabric; /*******************************************************************************
+/*******************************************************************************
  * Copyright (c) 2019 Institute for the Architecture of Application System - University of Stuttgart
  * Author: Ghareeb Falazi
  *
@@ -9,6 +9,7 @@ package blockchains.iaas.uni.stuttgart.de.plugin.fabric; /**********************
  * SPDX-License-Identifier: Apache-2.0
  *******************************************************************************/
 
+package blockchains.iaas.uni.stuttgart.de.plugin.fabric;
 
 import blockchains.iaas.uni.stuttgart.de.api.connectionprofiles.AbstractConnectionProfile;
 
