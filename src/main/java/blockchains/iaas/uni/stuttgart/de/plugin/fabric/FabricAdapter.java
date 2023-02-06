@@ -1,7 +1,7 @@
 /*******************************************************************************
- * Copyright (c) 2019-2022 Institute for the Architecture of Application System - University of Stuttgart
+ * Copyright (c) 2019-2023 Institute for the Architecture of Application System - University of Stuttgart
  * Author: Ghareeb Falazi
- *
+ * Co-author: Akshay Patel
  * This program and the accompanying materials are made available under the
  * terms the Apache Software License 2.0
  * which is available at https://www.apache.org/licenses/LICENSE-2.0.
@@ -22,6 +22,7 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
+import org.apache.commons.lang3.tuple.ImmutablePair;
 import org.hyperledger.fabric.gateway.Contract;
 import org.hyperledger.fabric.gateway.ContractEvent;
 import org.hyperledger.fabric.gateway.Gateway;
@@ -76,10 +77,16 @@ public class FabricAdapter implements BlockchainAdapter {
     public CompletableFuture<Transaction> invokeSmartContract(
             String smartContractPath,
             String functionIdentifier,
+            List<String> typeArguments,
             List<Parameter> inputs,
             List<Parameter> outputs,
             double requiredConfidence,
-            long timeoutMillis) throws BalException {
+            long timeoutMillis,
+            String signature,
+            String signer,
+            List<String> signers,
+            List<ImmutablePair<String, String>> signatures,
+            long minimumNumberOfSignatures) throws BalException {
         if (outputs.size() > 1) {
             throw new ParameterException("Hyperledger Fabric supports only at most a single return value.");
         }
@@ -150,7 +157,8 @@ public class FabricAdapter implements BlockchainAdapter {
     }
 
     @Override
-    public CompletableFuture<QueryResult> queryEvents(String smartContractAddress, String eventIdentifier, List<Parameter> outputParameters, String filter, TimeFrame timeFrame) throws BalException {
+    public CompletableFuture<QueryResult> queryEvents(String smartContractAddress, String eventIdentifier, List<String> typeArguments,
+                                                      List<Parameter> outputParameters, String filter, TimeFrame timeFrame) throws BalException {
         try {
             final SmartContractPathElements path = this.parsePathElements(smartContractAddress);
             final LocalDateTime fromDateTime = timeFrame != null ? timeFrame.getFromLocalDateTime() : null;
@@ -254,6 +262,7 @@ public class FabricAdapter implements BlockchainAdapter {
         }
     }
 
+
     private SmartContractPathElements parsePathElements(String smartContractPath) throws InvokeSmartContractFunctionFailure {
         SmartContractPathParser parser = SmartContractPathParser.parse(smartContractPath);
         String[] pathSegments = parser.getSmartContractPathSegments();
@@ -285,4 +294,30 @@ public class FabricAdapter implements BlockchainAdapter {
         private String chaincode;
         private String smartContract;
     }
+
+    @Override
+    public CompletableFuture<Transaction> tryReplaceInvocation(String s, String s1, String s2, List<String> list, List<Parameter> list1, List<Parameter> list2, double v, String s3, String s4, List<String> list3, long l) {
+        return null;
+    }
+
+    @Override
+    public boolean tryCancelInvocation(String s) {
+        return false;
+    }
+
+    @Override
+    public boolean canHandleDelegatedSubscription() {
+        return false;
+    }
+
+    @Override
+    public boolean delegatedSubscribe(String s, String s1, List<Parameter> list, double v, String s2, String s3, String s4) {
+        return false;
+    }
+
+    @Override
+    public boolean delegatedUnsubscribe(String s, String s1, String s2, List<String> list, List<Parameter> list1, String s3) {
+        return false;
+    }
+
 }
