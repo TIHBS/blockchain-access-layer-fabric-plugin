@@ -11,7 +11,9 @@
 
 package blockchains.iaas.uni.stuttgart.de.plugin.fabric;
 
-import blockchains.iaas.uni.stuttgart.de.api.IAdapterExtenstion;
+import blockchains.iaas.uni.stuttgart.de.api.IAdapterExtension;
+import blockchains.iaas.uni.stuttgart.de.api.connectionprofiles.AbstractConnectionProfile;
+import blockchains.iaas.uni.stuttgart.de.api.interfaces.BlockchainAdapter;
 import org.pf4j.Extension;
 import org.pf4j.Plugin;
 import org.pf4j.PluginWrapper;
@@ -41,15 +43,26 @@ public class FabricPlugin extends Plugin {
     }
 
     @Extension
-    public static class FabricAdapterImpl implements IAdapterExtenstion {
+    public static class FabricAdapterImpl implements IAdapterExtension {
 
         @Override
-        public FabricAdapter getAdapter(Map<String, String> parameters) {
+        public FabricAdapter getAdapter(AbstractConnectionProfile abstractConnectionProfile) {
             // TODO: Create read blockchainId from parameters
             String blockchainId = "";
             return FabricAdapter.builder()
                     .blockchainId(blockchainId)
                     .build();
+        }
+
+
+        @Override
+        public Class<? extends AbstractConnectionProfile> getConnectionProfileClass() {
+            return FabricConnectionProfile.class;
+        }
+
+        @Override
+        public String getConnectionProfileNamedType() {
+            return "fabric";
         }
 
         @Override
