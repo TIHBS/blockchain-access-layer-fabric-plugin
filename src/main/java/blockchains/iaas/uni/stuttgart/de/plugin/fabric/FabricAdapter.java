@@ -13,15 +13,14 @@ package blockchains.iaas.uni.stuttgart.de.plugin.fabric;
 
 import blockchains.iaas.uni.stuttgart.de.api.exceptions.*;
 import blockchains.iaas.uni.stuttgart.de.api.interfaces.BlockchainAdapter;
-import blockchains.iaas.uni.stuttgart.de.api.model.*;
 import blockchains.iaas.uni.stuttgart.de.api.model.Transaction;
+import blockchains.iaas.uni.stuttgart.de.api.model.*;
 import blockchains.iaas.uni.stuttgart.de.api.utils.BooleanExpressionEvaluator;
 import blockchains.iaas.uni.stuttgart.de.api.utils.SmartContractPathParser;
 import blockchains.iaas.uni.stuttgart.de.plugin.fabric.utils.AsyncManager;
-import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
-import io.grpc.*;
+import com.google.protobuf.InvalidProtocolBufferException;
 import io.grpc.Status;
+import io.grpc.*;
 import io.reactivex.Observable;
 import io.reactivex.subjects.PublishSubject;
 import lombok.AllArgsConstructor;
@@ -31,6 +30,9 @@ import lombok.NoArgsConstructor;
 import lombok.extern.log4j.Log4j2;
 import org.hyperledger.fabric.client.*;
 import org.hyperledger.fabric.client.identity.*;
+import org.hyperledger.fabric.protos.common.BlockchainInfo;
+import org.hyperledger.fabric.protos.common.Envelope;
+import org.hyperledger.fabric.protos.common.Payload;
 
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -60,6 +62,7 @@ public class FabricAdapter implements BlockchainAdapter {
     private static final int ENDORSEMENT_TIMEOUT_SECONDS = 15;
     private static final int SUBMISSION_TIMEOUT_SECONDS = 5;
     private static final int COMMITMENT_TIMEOUT_SECONDS = 60;
+    private static final int EVENT_QUERY_TIMEOUT_SECONDS = 5;
     private final Path certDirPath;
     private final Path keyDirPath;
     private final Path tlsCertPath;
@@ -67,8 +70,6 @@ public class FabricAdapter implements BlockchainAdapter {
     private final String peerEndpoint;
     private final String overrideAuth;
     private final String resourceManagerSmartContractAddress;
-
-    private final Gson gson = new GsonBuilder().setPrettyPrinting().create();
 
     public FabricAdapter(final String userName, final String cryptoPath,
                          final String mspId,
@@ -92,6 +93,11 @@ public class FabricAdapter implements BlockchainAdapter {
         try (var keyFiles = Files.list(dirPath)) {
             return keyFiles.findFirst().orElseThrow();
         }
+    }
+
+    public static LocalDateTime getCurrentTimestamp() {
+        Instant now = Instant.now();
+        return now.atZone(ZoneId.of("UTC")).toLocalDateTime();
     }
 
     protected Gateway createGateway(Channel channel) throws IOException, CertificateException, InvalidKeyException {
@@ -171,8 +177,8 @@ public class FabricAdapter implements BlockchainAdapter {
 
             try (Gateway gateway = createGateway(channel)) {
                 Network network = gateway.getNetwork(path.channel);
-                Contract contract = path.smartContract != null && !path.smartContract.isEmpty()?
-                        network.getContract(path.chaincode, path.smartContract):
+                Contract contract = path.smartContract != null && !path.smartContract.isEmpty() ?
+                        network.getContract(path.chaincode, path.smartContract) :
                         network.getContract(path.chaincode);
                 String[] params = inputs.stream().map(Parameter::getValue).toArray(String[]::new);
 
@@ -184,6 +190,7 @@ public class FabricAdapter implements BlockchainAdapter {
                         Parameter resultP = Parameter
                                 .builder()
                                 .name(outputs.get(0).getName())
+                                .type(outputs.get(0).getType())
                                 .value(new String(resultAsBytes, StandardCharsets.UTF_8))
                                 .build();
                         resultT.setReturnValues(Collections.singletonList(resultP));
@@ -228,16 +235,19 @@ public class FabricAdapter implements BlockchainAdapter {
         final PublishSubject<Occurrence> result = PublishSubject.create();
         CloseableIterator<ChaincodeEvent> eventIter;
         ExecutorService executorService = AsyncManager.createExecutorService();
+        Gateway gateway;
 
         try {
             ManagedChannel channel = newGrpcConnection();
 
-            try (Gateway gateway = createGateway(channel)) {
+            try {
+                gateway = createGateway(channel);
                 Network network = gateway.getNetwork(path.channel);
                 eventIter = network.getChaincodeEvents(path.chaincode);
                 executorService.execute(() -> {
                     try {
                         eventIter.forEachRemaining(event -> {
+
                             log.debug("Received chaincode event: {}", event);
 
                             try {
@@ -262,18 +272,20 @@ public class FabricAdapter implements BlockchainAdapter {
                 log.error("Failed to subscribe to event {}/{}.", smartContractAddress, eventIdentifier);
                 // this is a synchronous exception.
                 throw new BlockchainNodeUnreachableException(e.getMessage());
-            } finally {
-                try {
-                    channel.shutdownNow().awaitTermination(5, TimeUnit.SECONDS);
-                } catch (InterruptedException e) {
-                    log.warn("An error occurred while trying to close the network connection. Ignoring...", e);
-                }
             }
 
             return result.doFinally(() -> {
                 if (eventIter != null) {
                     eventIter.close();
                 }
+
+                try {
+                    channel.shutdownNow().awaitTermination(5, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    log.warn("An error occurred while trying to close the network connection. Ignoring...", e);
+                }
+
+                gateway.close();
 
                 executorService.shutdownNow();
             });
@@ -293,6 +305,7 @@ public class FabricAdapter implements BlockchainAdapter {
         final LocalDateTime fromDateTime = timeFrame != null ? timeFrame.getFromLocalDateTime() : null;
         final LocalDateTime toDateTime = timeFrame != null ? timeFrame.getToLocalDateTime() : null;
 
+
         try {
             ManagedChannel channel = newGrpcConnection();
             final CompletableFuture<QueryResult> result = new CompletableFuture<>();
@@ -300,10 +313,12 @@ public class FabricAdapter implements BlockchainAdapter {
 
             try (Gateway gateway = createGateway(channel)) {
                 Network network = gateway.getNetwork(path.channel);
+                final long currentBlockNumber = getCurrentBlockHeight(network, path.channel);
                 var request = network.newChaincodeEventsRequest(path.chaincode)
                         .startBlock(0)
                         .build();
-                try (var eventIter = request.getEvents()) {
+
+                try (var eventIter = request.getEvents(callOptions -> callOptions.withDeadlineAfter(EVENT_QUERY_TIMEOUT_SECONDS, TimeUnit.SECONDS))) {
                     while (eventIter.hasNext()) {
                         ChaincodeEvent event = eventIter.next();
                         log.debug("Handling event: {}...", event);
@@ -312,15 +327,25 @@ public class FabricAdapter implements BlockchainAdapter {
                         if (currentOccurrence != null) {
                             queryResult.getOccurrences().add(currentOccurrence);
                         }
+                        if (event.getBlockNumber() >= currentBlockNumber) {
+                            break;
+                        }
                     }
 
                     result.complete(queryResult);
                 }
 
-            } catch (CertificateException | InvalidKeyException e) {
+            } catch (CertificateException | InvalidKeyException | GatewayException e) {
                 log.error("Failed to query past event occurrences for event: {}/{}.", smartContractAddress, eventIdentifier);
                 // this is a synchronous exception.
                 throw new BlockchainNodeUnreachableException(e.getMessage());
+            } catch(GatewayRuntimeException e) {
+                // hacky way to finish waiting for events!
+               if (e.getStatus().getCode() == Status.DEADLINE_EXCEEDED.getCode()) {
+                   result.complete(queryResult);
+               } else {
+                   throw e;
+               }
             } finally {
                 try {
                     channel.shutdownNow().awaitTermination(5, TimeUnit.SECONDS);
@@ -408,6 +433,11 @@ public class FabricAdapter implements BlockchainAdapter {
         }
     }
 
+    protected long getCurrentBlockHeight(Network network, String channelName) throws GatewayException, InvalidProtocolBufferException {
+        byte[] rawResult = network.getContract("qscc").evaluateTransaction("GetChainInfo", channelName);
+        return BlockchainInfo.parseFrom(rawResult).getHeight();
+    }
+
     @Override
     public String testConnection() {
         try {
@@ -443,11 +473,6 @@ public class FabricAdapter implements BlockchainAdapter {
         }
 
         return builder.build();
-    }
-
-    public static LocalDateTime getCurrentTimestamp() {
-        Instant now = Instant.now();
-        return now.atZone(ZoneId.of("UTC")).toLocalDateTime();
     }
 
     @Getter
