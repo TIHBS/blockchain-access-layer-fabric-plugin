@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2019-2022 Institute for the Architecture of Application System - University of Stuttgart
+ * Copyright (c) 2019-2024 Institute for the Architecture of Application System - University of Stuttgart
  * Author: Ghareeb Falazi
  *
  * This program and the accompanying materials are made available under the
@@ -14,28 +14,33 @@ package blockchains.iaas.uni.stuttgart.de.plugin.fabric;
 import blockchains.iaas.uni.stuttgart.de.api.exceptions.*;
 import blockchains.iaas.uni.stuttgart.de.api.interfaces.BlockchainAdapter;
 import blockchains.iaas.uni.stuttgart.de.api.model.*;
+import blockchains.iaas.uni.stuttgart.de.api.model.Transaction;
 import blockchains.iaas.uni.stuttgart.de.api.utils.BooleanExpressionEvaluator;
 import blockchains.iaas.uni.stuttgart.de.api.utils.SmartContractPathParser;
+import blockchains.iaas.uni.stuttgart.de.plugin.fabric.utils.AsyncManager;
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import io.grpc.*;
+import io.grpc.Status;
 import io.reactivex.Observable;
 import io.reactivex.subjects.PublishSubject;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
-import org.hyperledger.fabric.gateway.Contract;
-import org.hyperledger.fabric.gateway.ContractEvent;
-import org.hyperledger.fabric.gateway.Gateway;
-import org.hyperledger.fabric.gateway.Network;
-import org.hyperledger.fabric.gateway.impl.event.ContractEventImpl;
-import org.hyperledger.fabric.sdk.BlockEvent;
-import org.hyperledger.fabric.sdk.ChaincodeEvent;
-import org.hyperledger.fabric.sdk.exception.InvalidArgumentException;
-import org.hyperledger.fabric.sdk.exception.ProposalException;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.log4j.Log4j2;
+import org.hyperledger.fabric.client.*;
+import org.hyperledger.fabric.client.identity.*;
 
+import java.io.IOException;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.security.InvalidKeyException;
+import java.security.cert.CertificateException;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
@@ -43,12 +48,85 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
-import java.util.function.Consumer;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
-@Builder
+
+@Log4j2
 public class FabricAdapter implements BlockchainAdapter {
-    private String blockchainId;
-    private static final Logger log = LoggerFactory.getLogger(FabricAdapter.class);
+    private static final int EVALUATION_TIMEOUT_SECONDS = 5;
+    private static final int ENDORSEMENT_TIMEOUT_SECONDS = 15;
+    private static final int SUBMISSION_TIMEOUT_SECONDS = 5;
+    private static final int COMMITMENT_TIMEOUT_SECONDS = 60;
+    private final Path certDirPath;
+    private final Path keyDirPath;
+    private final Path tlsCertPath;
+    private final String mspId;
+    private final String peerEndpoint;
+    private final String overrideAuth;
+    private final String resourceManagerSmartContractAddress;
+
+    private final Gson gson = new GsonBuilder().setPrettyPrinting().create();
+
+    public FabricAdapter(final String userName, final String cryptoPath,
+                         final String mspId,
+                         final String peerEndpoint,
+                         final String overrideAuth,
+                         final String resourceManagerSmartContractAddress) {
+        this.resourceManagerSmartContractAddress = resourceManagerSmartContractAddress;
+        this.mspId = mspId;
+        this.peerEndpoint = peerEndpoint;
+        this.overrideAuth = overrideAuth;
+        final Path CRYPTO_PATH = Paths.get(cryptoPath);
+        String peerAddress = overrideAuth != null && !overrideAuth.isEmpty() ? overrideAuth : peerEndpoint;
+        String orgName = Stream.of(peerAddress.split("\\.")).skip(1).collect(Collectors.joining("."));
+        String userFolder = userName + "@" + orgName;
+        this.keyDirPath = CRYPTO_PATH.resolve("users").resolve(userFolder).resolve("msp").resolve("keystore");
+        this.certDirPath = CRYPTO_PATH.resolve("users").resolve(userFolder).resolve("msp").resolve("signcerts");
+        this.tlsCertPath = CRYPTO_PATH.resolve("peers").resolve(peerAddress).resolve("tls").resolve("ca.crt");
+    }
+
+    private static Path getFirstFilePath(Path dirPath) throws IOException {
+        try (var keyFiles = Files.list(dirPath)) {
+            return keyFiles.findFirst().orElseThrow();
+        }
+    }
+
+    protected Gateway createGateway(Channel channel) throws IOException, CertificateException, InvalidKeyException {
+        var builder = Gateway.newInstance().identity(newIdentity()).signer(newSigner()).connection(channel)
+                // Default timeouts for different gRPC calls
+                .evaluateOptions(options -> options.withDeadlineAfter(EVALUATION_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+                .endorseOptions(options -> options.withDeadlineAfter(ENDORSEMENT_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+                .submitOptions(options -> options.withDeadlineAfter(SUBMISSION_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+                .commitStatusOptions(options -> options.withDeadlineAfter(COMMITMENT_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+
+        return builder.connect();
+    }
+
+    protected ManagedChannel newGrpcConnection() throws IOException {
+        var credentials = TlsChannelCredentials.newBuilder()
+                .trustManager(this.tlsCertPath.toFile())
+                .build();
+        return Grpc.newChannelBuilder(this.peerEndpoint, credentials)
+                .overrideAuthority(this.overrideAuth)
+                .build();
+    }
+
+    protected Identity newIdentity() throws IOException, CertificateException {
+        try (var certReader = Files.newBufferedReader(getFirstFilePath(this.certDirPath))) {
+            var certificate = Identities.readX509Certificate(certReader);
+            return new X509Identity(this.mspId, certificate);
+        }
+    }
+
+    protected Signer newSigner() throws IOException, InvalidKeyException {
+        try (var keyReader = Files.newBufferedReader(getFirstFilePath(this.keyDirPath))) {
+            var privateKey = Identities.readPrivateKey(keyReader);
+            return Signers.newPrivateKeySigner(privateKey);
+        }
+    }
 
     @Override
     public CompletableFuture<Transaction> submitTransaction(String receiverAddress, BigDecimal value, double requiredConfidence
@@ -80,42 +158,60 @@ public class FabricAdapter implements BlockchainAdapter {
             List<Parameter> outputs,
             double requiredConfidence,
             long timeoutMillis) throws BalException {
+
         if (outputs.size() > 1) {
             throw new ParameterException("Hyperledger Fabric supports only at most a single return value.");
         }
+
         CompletableFuture<Transaction> result = new CompletableFuture<>();
         SmartContractPathElements path = this.parsePathElements(smartContractPath);
 
         try {
-            Contract contract = GatewayManager.getInstance().getContract(blockchainId, path.channel, path.chaincode);
-            String[] params = inputs.stream().map(Parameter::getValue).toArray(String[]::new);
+            ManagedChannel channel = newGrpcConnection();
 
-            try {
-                byte[] resultAsBytes = contract.submitTransaction(functionIdentifier, params);
-                Transaction resultT = new Transaction();
+            try (Gateway gateway = createGateway(channel)) {
+                Network network = gateway.getNetwork(path.channel);
+                Contract contract = path.smartContract != null && !path.smartContract.isEmpty()?
+                        network.getContract(path.chaincode, path.smartContract):
+                        network.getContract(path.chaincode);
+                String[] params = inputs.stream().map(Parameter::getValue).toArray(String[]::new);
 
-                if (outputs.size() == 1) {
-                    Parameter resultP = Parameter
-                            .builder()
-                            .name(outputs.get(0).getName())
-                            .value(new String(resultAsBytes, StandardCharsets.UTF_8))
-                            .build();
-                    resultT.setReturnValues(Collections.singletonList(resultP));
-                    log.info(resultP.getValue());
-                } else if (outputs.size() == 0) {
-                    log.info("Fabric transaction without a return value executed!");
-                    resultT.setReturnValues(Collections.emptyList());
+                try {
+                    byte[] resultAsBytes = contract.submitTransaction(functionIdentifier, params);
+                    Transaction resultT = new Transaction();
+
+                    if (outputs.size() == 1) {
+                        Parameter resultP = Parameter
+                                .builder()
+                                .name(outputs.get(0).getName())
+                                .value(new String(resultAsBytes, StandardCharsets.UTF_8))
+                                .build();
+                        resultT.setReturnValues(Collections.singletonList(resultP));
+                        log.info(resultP.getValue());
+                    } else if (outputs.isEmpty()) {
+                        log.info("Fabric transaction without a return value executed!");
+                        resultT.setReturnValues(Collections.emptyList());
+                    }
+
+                    resultT.setState(TransactionState.RETURN_VALUE);
+                    result.complete(resultT);
+                } catch (Exception e) {
+                    log.error("Failed to invoke smart contract function {}/{}.", smartContractPath, functionIdentifier, e);
+                    // exceptions at this level are invocation exceptions. They should be sent asynchronously to the client app.
+                    result.completeExceptionally(new InvokeSmartContractFunctionFailure(e.getMessage()));
                 }
-
-                resultT.setState(TransactionState.RETURN_VALUE);
-                result.complete(resultT);
             } catch (Exception e) {
-                // exceptions at this level are invocation exceptions. They should be sent asynchronously to the client app.
-                result.completeExceptionally(new InvokeSmartContractFunctionFailure(e.getMessage()));
+                log.error("Failed to invoke smart contract function {}/{}.", smartContractPath, functionIdentifier, e);
+                // this is a synchronous exception.
+                throw new BlockchainNodeUnreachableException(e.getMessage());
+            } finally {
+                channel.shutdownNow().awaitTermination(5, TimeUnit.SECONDS);
             }
-        } catch (Exception e) {
-            // this is a synchronous exception.
+        } catch (IOException e) {
+            log.error("Failed to establish network connection.", e);
             throw new BlockchainNodeUnreachableException(e.getMessage());
+        } catch (InterruptedException e) {
+            log.warn("An error occurred while trying to close the network connection. Ignoring...", e);
         }
 
         return result;
@@ -129,99 +225,170 @@ public class FabricAdapter implements BlockchainAdapter {
             double degreeOfConfidence,
             String filter) throws BalException {
         SmartContractPathElements path = this.parsePathElements(smartContractAddress);
-        Contract contract = GatewayManager.getInstance().getContract(blockchainId, path.channel, path.chaincode);
         final PublishSubject<Occurrence> result = PublishSubject.create();
+        CloseableIterator<ChaincodeEvent> eventIter;
+        ExecutorService executorService = AsyncManager.createExecutorService();
 
-        Consumer<ContractEvent> consumer = contract.addContractListener(event -> {
-            log.info(event.toString());
-
-            try {
-                Occurrence occurrence = this.handleEvent(event, outputParameters, filter);
-
-                if (occurrence != null) {
-                    result.onNext(occurrence);
-                }
-            } catch (InvalidScipParameterException e) {
-                result.onError(e);
-            }
-        }, eventIdentifier);
-
-        return result.doFinally(() -> contract.removeContractListener(consumer));
-    }
-
-    @Override
-    public CompletableFuture<QueryResult> queryEvents(String smartContractAddress, String eventIdentifier, List<Parameter> outputParameters, String filter, TimeFrame timeFrame) throws BalException {
         try {
-            final SmartContractPathElements path = this.parsePathElements(smartContractAddress);
-            final LocalDateTime fromDateTime = timeFrame != null ? timeFrame.getFromLocalDateTime() : null;
-            final LocalDateTime toDateTime = timeFrame != null ? timeFrame.getToLocalDateTime() : null;
-            final Network network = GatewayManager.getInstance().getChannel(blockchainId, path.channel);
-            final long latestBlockNumber = network
-                    .getChannel()
-                    .queryBlockchainInfo()
-                    .getHeight() - 1;
-            final CompletableFuture<QueryResult> result = new CompletableFuture<>();
-            final QueryResult queryResult = QueryResult.builder().occurrences(new ArrayList<>()).build();
-            log.info("latest Fabric block number: {}", latestBlockNumber);
+            ManagedChannel channel = newGrpcConnection();
 
-            // the listening is over either when the block number is past the latest block number at the time of invocation,
-            // or when the "to" timestamp is exceeded by the transaction timestamp.
-            // using the provided ContractListener does not work since we cannot tell when past events are done in the replay!
-            final Consumer<BlockEvent> consumer = network.addBlockListener(0, blockEvent -> {
-                log.info("handling block no. {}", blockEvent.getBlockNumber());
+            try (Gateway gateway = createGateway(channel)) {
+                Network network = gateway.getNetwork(path.channel);
+                eventIter = network.getChaincodeEvents(path.chaincode);
+                executorService.execute(() -> {
+                    try {
+                        eventIter.forEachRemaining(event -> {
+                            log.debug("Received chaincode event: {}", event);
 
-                blockEvent.getTransactionEvents().forEach(tE -> {
-                    log.info("handling transaction hash: {}", tE.getTransactionID());
-                    final LocalDateTime transactionDateTime = tE.getTimestamp().toInstant()
-                            .atZone(ZoneId.systemDefault())
-                            .toLocalDateTime();
-                    // we could be already done!
-                    if (toDateTime != null && toDateTime.isBefore(transactionDateTime)) {
-                        log.info("transaction after last allowed time. Completing!");
-                        result.complete(queryResult);
-                    } else {
-                        // ensure we are not before the first permitted timestamp
-                        if (fromDateTime == null || fromDateTime.isBefore(transactionDateTime)) {
-                            // iterate over events of this transaction
-                            tE.getTransactionActionInfos().forEach(tAI -> {
-                                ChaincodeEvent cE = tAI.getEvent();
-                                // check if name matches
-                                if (cE != null && cE.getEventName() != null && cE.getEventName().equals(eventIdentifier)) {
-                                    // check if filter evaluates to true
-                                    Occurrence occurrence = this.handleEvent(new ContractEventImpl(tE, cE), outputParameters, filter);
+                            try {
+                                Occurrence occurrence = this.handleEvent(event, eventIdentifier, outputParameters, filter);
 
-                                    if (occurrence != null) {
-                                        // we found a matching occurrence
-                                        queryResult.getOccurrences().add(occurrence);
-                                    }
+                                if (occurrence != null) {
+                                    result.onNext(occurrence);
                                 }
-                            });
+                            } catch (InvalidScipParameterException e) {
+                                log.error("An error occurred while handling chaincode event: {}", event, e);
+                                result.onError(e);
+                            }
+                        });
+                    } catch (GatewayRuntimeException e) {
+                        if (e.getStatus().getCode() != Status.Code.CANCELLED) {
+                            throw e;
                         }
                     }
                 });
 
-                if (blockEvent.getBlockNumber() >= latestBlockNumber) {
-                    log.info("currentBlock >= latestBlock so completing!");
-                    result.complete(queryResult);
+            } catch (CertificateException | InvalidKeyException e) {
+                log.error("Failed to subscribe to event {}/{}.", smartContractAddress, eventIdentifier);
+                // this is a synchronous exception.
+                throw new BlockchainNodeUnreachableException(e.getMessage());
+            } finally {
+                try {
+                    channel.shutdownNow().awaitTermination(5, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    log.warn("An error occurred while trying to close the network connection. Ignoring...", e);
                 }
+            }
+
+            return result.doFinally(() -> {
+                if (eventIter != null) {
+                    eventIter.close();
+                }
+
+                executorService.shutdownNow();
             });
 
-            return result.whenComplete((res, error) -> network.removeBlockListener(consumer));
-        } catch (ProposalException | InvalidArgumentException e) {
+        } catch (IOException e) {
+            log.error("Failed to establish network connection.", e);
             throw new BlockchainNodeUnreachableException(e.getMessage());
         }
+
     }
 
-    private Occurrence handleEvent(ContractEvent event, List<Parameter> outputParameters, String filter) throws InvalidScipParameterException {
+    @Override
+    public CompletableFuture<QueryResult> queryEvents(String smartContractAddress, String eventIdentifier, List<Parameter> outputParameters, String filter, TimeFrame timeFrame) throws BalException {
+
+        SmartContractPathElements path = this.parsePathElements(smartContractAddress);
+        // todo find a way to read date time from block numbers
+        final LocalDateTime fromDateTime = timeFrame != null ? timeFrame.getFromLocalDateTime() : null;
+        final LocalDateTime toDateTime = timeFrame != null ? timeFrame.getToLocalDateTime() : null;
+
+        try {
+            ManagedChannel channel = newGrpcConnection();
+            final CompletableFuture<QueryResult> result = new CompletableFuture<>();
+            final QueryResult queryResult = QueryResult.builder().occurrences(new ArrayList<>()).build();
+
+            try (Gateway gateway = createGateway(channel)) {
+                Network network = gateway.getNetwork(path.channel);
+                var request = network.newChaincodeEventsRequest(path.chaincode)
+                        .startBlock(0)
+                        .build();
+                try (var eventIter = request.getEvents()) {
+                    while (eventIter.hasNext()) {
+                        ChaincodeEvent event = eventIter.next();
+                        log.debug("Handling event: {}...", event);
+                        Occurrence currentOccurrence = handleEvent(event, eventIdentifier, outputParameters, filter);
+
+                        if (currentOccurrence != null) {
+                            queryResult.getOccurrences().add(currentOccurrence);
+                        }
+                    }
+
+                    result.complete(queryResult);
+                }
+
+            } catch (CertificateException | InvalidKeyException e) {
+                log.error("Failed to query past event occurrences for event: {}/{}.", smartContractAddress, eventIdentifier);
+                // this is a synchronous exception.
+                throw new BlockchainNodeUnreachableException(e.getMessage());
+            } finally {
+                try {
+                    channel.shutdownNow().awaitTermination(5, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    log.warn("An error occurred while trying to close the network connection. Ignoring...", e);
+                }
+            }
+
+            return result;
+
+        } catch (IOException e) {
+            log.error("Failed to establish network connection.", e);
+            throw new BlockchainNodeUnreachableException(e.getMessage());
+        }
+
+    }
+
+    @Override
+    public ResourceManagerSmartContract getResourceManagerSmartContract() throws NotSupportedException {
+        Parameter txId = new Parameter("txId",
+                "{ \"Name\": \"txId\", \"Type\": \"string\" }",
+                null);
+        List<Parameter> txIdAsList = new ArrayList<>();
+        List<Parameter> emptyList = new ArrayList<>();
+        txIdAsList.add(txId);
+        SmartContractFunction prepare = new SmartContractFunction("prepare", txIdAsList, emptyList);
+        SmartContractFunction commit = new SmartContractFunction("commit", txIdAsList, emptyList);
+        SmartContractFunction abort = new SmartContractFunction("abort", txIdAsList, emptyList);
+        Parameter owner = new Parameter("owner",
+                "{ \"Name\": \"owner\", \"Type\": \"string\" }",
+                null);
+        Parameter isYes = new Parameter("isYes",
+                "{ \"Name\": \"isYes\", \"Type\": \"string\" }",
+                null);
+        List<Parameter> votedEventParams = new ArrayList<>();
+        votedEventParams.add(owner);
+        votedEventParams.add(txId);
+        votedEventParams.add(isYes);
+        List<Parameter> abortedEventParams = new ArrayList<>();
+        abortedEventParams.add(owner);
+        abortedEventParams.add(txId);
+        SmartContractEvent voted = new SmartContractEvent("Voted", votedEventParams);
+        SmartContractEvent aborted = new SmartContractEvent("TxAborted", abortedEventParams);
+        List<SmartContractFunction> functions = new ArrayList<>();
+        functions.add(prepare);
+        functions.add(commit);
+        functions.add(abort);
+        List<SmartContractEvent> events = new ArrayList<>();
+        events.add(voted);
+        events.add(aborted);
+
+        return new FabricResourceManagerSmartContract(this.resourceManagerSmartContractAddress, functions, events);
+    }
+
+    private Occurrence handleEvent(ChaincodeEvent event, String eventName, List<Parameter> outputParameters, String filter) throws InvalidScipParameterException {
         // todo try to parse the returned value according to the outputParameters
+        if (!event.getEventName().equalsIgnoreCase(eventName)) {
+            return null;
+        }
+
         List<Parameter> parameters = new ArrayList<>();
 
-        if (event.getPayload().isPresent() && outputParameters.size() > 0) {
+        if (!outputParameters.isEmpty()) {
             Parameter parameter = Parameter
                     .builder()
                     .name(outputParameters.get(0).getName())
                     .type(outputParameters.get(0).getType())
-                    .value(new String(event.getPayload().get(), StandardCharsets.UTF_8))
+                    .value(new String(event.getPayload(), StandardCharsets.UTF_8))
                     .build();
             parameters.add(parameter);
         }
@@ -231,7 +398,7 @@ public class FabricAdapter implements BlockchainAdapter {
                 return Occurrence
                         .builder()
                         .parameters(parameters)
-                        .isoTimestamp(DateTimeFormatter.ISO_LOCAL_DATE_TIME.withZone(ZoneId.of("UTC")).format(event.getTransactionEvent().getTimestamp().toInstant()))
+                        .isoTimestamp(DateTimeFormatter.ISO_LOCAL_DATE_TIME.withZone(ZoneId.of("UTC")).format(getCurrentTimestamp()))
                         .build();
             }
 
@@ -244,12 +411,14 @@ public class FabricAdapter implements BlockchainAdapter {
     @Override
     public String testConnection() {
         try {
-            Gateway gateway = GatewayManager.getInstance().getGateway(blockchainId);
-            if (gateway.getIdentity() != null)
-                return "true";
-            else
-                return "Cannot get gateway identity!";
+            ManagedChannel channel = newGrpcConnection();
+            ConnectivityState state = channel.getState(true);
+            channel.shutdownNow();
+
+            return state.toString();
+
         } catch (Exception e) {
+            log.error("Failed to establish network connection.", e);
             return e.getMessage();
         }
     }
@@ -274,6 +443,11 @@ public class FabricAdapter implements BlockchainAdapter {
         }
 
         return builder.build();
+    }
+
+    public static LocalDateTime getCurrentTimestamp() {
+        Instant now = Instant.now();
+        return now.atZone(ZoneId.of("UTC")).toLocalDateTime();
     }
 
     @Getter
