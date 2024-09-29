@@ -12,6 +12,7 @@
 package blockchains.iaas.uni.stuttgart.de.plugin.fabric;
 
 import blockchains.iaas.uni.stuttgart.de.api.connectionprofiles.AbstractConnectionProfile;
+import com.fasterxml.jackson.annotation.JsonTypeName;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -23,8 +24,9 @@ import java.util.Properties;
 @Getter
 @AllArgsConstructor
 @NoArgsConstructor
+@JsonTypeName("fabric")
 public class FabricConnectionProfile extends AbstractConnectionProfile {
-    private static final String PREFIX = "hyperledger.fabric.";
+    private static final String PREFIX = "fabric.";
     private static final String CRYPTO_PATH = PREFIX + "cryptoPath";
     private static final String MSP_ID = PREFIX + "mspId";
     private static final String USERNAME = PREFIX + "username";
