@@ -1,6 +1,7 @@
 /*******************************************************************************
- * Copyright (c) 2022 Institute for the Architecture of Application System - University of Stuttgart
+ * Copyright (c) 2022-2024 Institute for the Architecture of Application System - University of Stuttgart
  * Author: Akshay Patel
+ * Co-Author: Ghareeb Falazi
  *
  * This program and the accompanying materials are made available under the
  * terms the Apache Software License 2.0
@@ -16,8 +17,6 @@ import blockchains.iaas.uni.stuttgart.de.api.connectionprofiles.AbstractConnecti
 import org.pf4j.Extension;
 import org.pf4j.Plugin;
 import org.pf4j.PluginWrapper;
-
-import java.util.Map;
 
 public class FabricPlugin extends Plugin {
     /**
@@ -46,11 +45,17 @@ public class FabricPlugin extends Plugin {
 
         @Override
         public FabricAdapter getAdapter(AbstractConnectionProfile connectionProfile) {
-            // TODO: Create read blockchainId from parameters
-            String blockchainId = "";
-            return FabricAdapter.builder()
-                    .blockchainId(blockchainId)
-                    .build();
+            assert connectionProfile instanceof FabricConnectionProfile;
+            FabricConnectionProfile fabricConnectionProfile = (FabricConnectionProfile) connectionProfile;
+
+            return new FabricAdapter(
+                    fabricConnectionProfile.getUsername(),
+                    fabricConnectionProfile.getCryptoPath(),
+                    fabricConnectionProfile.getMspId(),
+                    fabricConnectionProfile.getPeerEndpoint(),
+                    fabricConnectionProfile.getOverrideAuth(),
+                    fabricConnectionProfile.getResourceManagerSmartContractAddress());
+
         }
 
         @Override
