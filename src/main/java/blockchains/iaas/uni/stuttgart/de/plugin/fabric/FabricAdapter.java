@@ -375,10 +375,10 @@ public class FabricAdapter implements BlockchainAdapter {
         SmartContractFunction commit = new SmartContractFunction("commit", txIdAsList, emptyList);
         SmartContractFunction abort = new SmartContractFunction("abort", txIdAsList, emptyList);
         Parameter owner = new Parameter("owner",
-                "{ \"Name\": \"owner\", \"Type\": \"string\" }",
+                "{ \"Type\": \"string\" }",
                 null);
         Parameter isYes = new Parameter("isYes",
-                "{ \"Name\": \"isYes\", \"Type\": \"string\" }",
+                "{ \"Type\": \"string\" }",
                 null);
         List<Parameter> votedEventParams = new ArrayList<>();
         votedEventParams.add(owner);
