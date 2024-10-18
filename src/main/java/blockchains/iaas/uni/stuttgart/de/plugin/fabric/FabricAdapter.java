@@ -163,7 +163,8 @@ public class FabricAdapter implements BlockchainAdapter {
             List<Parameter> inputs,
             List<Parameter> outputs,
             double requiredConfidence,
-            long timeoutMillis) throws BalException {
+            long timeoutMillis,
+            boolean sideEffects) throws BalException {
 
         if (outputs.size() > 1) {
             throw new ParameterException("Hyperledger Fabric supports only at most a single return value.");
@@ -183,7 +184,14 @@ public class FabricAdapter implements BlockchainAdapter {
                 String[] params = inputs.stream().map(Parameter::getValue).toArray(String[]::new);
 
                 try {
-                    byte[] resultAsBytes = contract.submitTransaction(functionIdentifier, params);
+                    byte[] resultAsBytes;
+
+                    if (sideEffects) {
+                        resultAsBytes = contract.submitTransaction(functionIdentifier, params);
+                    } else {
+                        resultAsBytes = contract.evaluateTransaction(functionIdentifier, params);
+                    }
+
                     Transaction resultT = new Transaction();
 
                     if (outputs.size() == 1) {

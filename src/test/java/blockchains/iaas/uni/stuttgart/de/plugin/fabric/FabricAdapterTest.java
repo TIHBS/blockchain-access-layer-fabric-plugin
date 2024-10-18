@@ -25,21 +25,30 @@ import static org.junit.jupiter.api.Assertions.*;
 /**
  * These tests can only be run with an existing fabric network with a suitable chaincode installed.
  * Therefore, ensure to run <a href="https://hyperledger-fabric.readthedocs.io/en/latest/write_first_app.html">the tutorial</a>
- * Choose the folder 'fabric-samples\asset-transfer-events' for installing the chaincode (it does not matter which language
+ * Choose the folder 'fabric-samples\asset-transfer-events' for installing the chaincode (it does not matter which language)
+ *
+ * ./test-network/network.sh down
+ * ./test-network/network.sh up createChannel -c mychannel -ca
+ * ./test-network/network.sh deployCC -ccn basic -ccp ../asset-transfer-events/chaincode-javascript/ -ccl javascript
  */
 @Log4j2
 class FabricAdapterTest {
     final static String stringType = "{ \"type\": \"string\" }";
-    final String smartContractPath = "mychannel/events";
+    final String smartContractPath = "mychannel/basic";
     final String functionName = "CreateAsset";
 
     @Test
     void testInvokeSmartContract() throws ExecutionException, InterruptedException {
         FabricAdapter adapter = getAdapter();
-        Transaction tx = invokeSmartContract(adapter);
+        final String id1 =  createUniqueId();
+        Transaction tx = invokeCreateAsset(adapter, "6669", id1);
         assertNotNull(tx);
         assertEquals(TransactionState.RETURN_VALUE, tx.getState());
         assertEquals(1, tx.getReturnValues().size());
+        tx = invokeGetAsset(adapter, id1);
+        assertNotNull(tx);
+        assertEquals(1, tx.getReturnValues().size());
+        assertTrue(tx.getReturnValues().get(0).getValue().contains("6669"));
     }
 
     @Test
@@ -48,8 +57,10 @@ class FabricAdapterTest {
         FabricAdapter adapter = getAdapter();
         Observable<Occurrence> obs = adapter.subscribeToEvent(smartContractPath, "CreateAsset", List.of(new Parameter("EventData", stringType, null)), 1.0, null);
         Disposable dis = obs.subscribe(occurrences::add);
-        invokeSmartContract(adapter);
-        invokeSmartContract(adapter);
+        final String id1 =  createUniqueId();
+        final String id2 = createUniqueId();
+        invokeCreateAsset(adapter, "123456", id1);
+        invokeCreateAsset(adapter, "987654", id2);
         Thread.sleep(15 * 1000);
         dis.dispose();
         assertEquals(2, occurrences.size());
@@ -58,19 +69,19 @@ class FabricAdapterTest {
     @Test
     void testQueryEvents() throws ExecutionException, InterruptedException {
         FabricAdapter adapter = getAdapter();
-        LocalDateTime now = LocalDateTime.now();
-        invokeSmartContract(adapter, now.toString());
-        invokeSmartContract(adapter, now.toString());
+        int num= (int)Math.ceil(Math.random()*1000.0);
+        invokeCreateAsset(adapter, String.valueOf(num), createUniqueId());
+        invokeCreateAsset(adapter, String.valueOf(num), createUniqueId());
         QueryResult result = adapter.queryEvents(smartContractPath, "CreateAsset", List.of(new Parameter("EventData", stringType, null)), "", null).get();
         List<Occurrence> occurrences = result.getOccurrences();
         assertNotNull(occurrences);
         assertTrue(occurrences.size() >= 2);
-        assertEquals(2, occurrences.stream().map(o -> o.getParameters().get(0).getValue()).filter(t -> t.contains(now.toString())).count());
+        assertTrue(2 <= occurrences.stream().map(o -> o.getParameters().get(0).getValue()).filter(t -> t.contains(String.valueOf(num))).count());
     }
     @Test
     void testGetCurrentBlockHeight() throws ExecutionException, InterruptedException, IOException, CertificateException, InvalidKeyException, GatewayException {
         FabricAdapter adapter = getAdapter();
-        invokeSmartContract(adapter);
+        invokeCreateAsset(adapter, "20", "asset_" + Instant.now().getEpochSecond());
         ManagedChannel channel = adapter.newGrpcConnection();
 
         try (Gateway gateway = adapter.createGateway(channel)) {
@@ -82,19 +93,21 @@ class FabricAdapterTest {
         channel.shutdownNow().awaitTermination(5, TimeUnit.SECONDS);
     }
 
-    private Transaction invokeSmartContract(FabricAdapter adapter) throws ExecutionException, InterruptedException {
-        return invokeSmartContract(adapter, "20");
+
+    private Transaction invokeCreateAsset(FabricAdapter adapter, String size, String id) throws ExecutionException, InterruptedException {
+        List<Parameter> parameters = getCreateAssetParameters(size, id);
+        return adapter.invokeSmartContract(smartContractPath, functionName, parameters, List.of(new Parameter("Result", stringType, null)), 1.0, 0, true).get();
     }
 
-    private Transaction invokeSmartContract(FabricAdapter adapter, String size) throws ExecutionException, InterruptedException {
-        List<Parameter> parameters = getCreateAssetParameters(size);
-        return adapter.invokeSmartContract(smartContractPath, functionName, parameters, List.of(new Parameter("Result", stringType, null)), 1.0, 0).get();
+    private Transaction invokeGetAsset(FabricAdapter adapter, String id) throws ExecutionException, InterruptedException {
+        List<Parameter> parameters = List.of(new Parameter("ID", stringType, id));
+        return adapter.invokeSmartContract(smartContractPath, "ReadAsset", parameters, List.of(new Parameter("Result", stringType, null)), 1.0, 0, false).get();
     }
 
 
-    private List<Parameter> getCreateAssetParameters(String size) {
+    private List<Parameter> getCreateAssetParameters(String size, String id) {
         return List.of(
-                new Parameter("ID", stringType, "asset_" + Instant.now().getEpochSecond()),
+                new Parameter("ID", stringType, id),
                 new Parameter("Color", stringType, "blue"),
                 new Parameter("Size", stringType, size),
                 new Parameter("Owner", stringType, "Ghareeb"),
@@ -103,11 +116,15 @@ class FabricAdapterTest {
 
     private FabricAdapter getAdapter() {
         return new FabricAdapter("User1",
-                "C:\\Users\\Ghareeb\\Documents\\GitHub\\Fabric\\fabric-samples\\test-network\\organizations\\peerOrganizations\\org1.example.com",
+                "C:\\Users\\Ghareeb\\Documents\\GitHub\\Fabric\\fabric-samples-backup\\test-network\\organizations\\peerOrganizations\\org1.example.com",
                 "Org1MSP",
                 "localhost:7051",
                 "peer0.org1.example.com",
                 "");
+    }
+
+    private static String createUniqueId() {
+        return "asset_" + Instant.now().getEpochSecond();
     }
 
 }
