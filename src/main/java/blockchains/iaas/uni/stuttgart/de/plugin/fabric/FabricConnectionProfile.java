@@ -17,13 +17,26 @@ import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
+import lombok.extern.log4j.Log4j2;
+import org.hyperledger.fabric.client.identity.Identities;
+import org.hyperledger.fabric.client.identity.X509Identity;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.security.cert.CertificateException;
 import java.util.Properties;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+import static blockchains.iaas.uni.stuttgart.de.plugin.fabric.FabricAdapter.getFirstFilePath;
 
 @Setter
 @Getter
 @AllArgsConstructor
 @NoArgsConstructor
+@Log4j2
 @JsonTypeName("fabric")
 public class FabricConnectionProfile extends AbstractConnectionProfile {
     private static final String PREFIX = "fabric.";
@@ -52,6 +65,22 @@ public class FabricConnectionProfile extends AbstractConnectionProfile {
         result.setProperty(USERNAME, this.username);
 
         return result;
+    }
+
+    @Override
+    public String getIdentity() {
+        try {
+            String orgName = Stream.of(overrideAuth.split("\\.")).skip(1).collect(Collectors.joining("."));
+            String userFolder = username + "@" + orgName;
+            Path certDirPath = Paths.get(cryptoPath).resolve("users").resolve(userFolder).resolve("msp").resolve("signcerts");
+            try (var certReader = Files.newBufferedReader(getFirstFilePath(certDirPath))) {
+                var certificate = Identities.readX509Certificate(certReader);
+                return certificate.getSubjectX500Principal().getName();
+            }
+        } catch (IOException | CertificateException e) {
+            log.error("Failed to read client identity", e);
+            return null;
+        }
     }
 
     @Override

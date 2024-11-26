@@ -10,9 +10,11 @@ import org.hyperledger.fabric.client.GatewayException;
 import org.hyperledger.fabric.client.Network;
 import org.junit.jupiter.api.Test;
 
+import javax.security.auth.x500.X500Principal;
 import java.io.IOException;
 import java.security.InvalidKeyException;
 import java.security.cert.CertificateException;
+import java.security.cert.X509Certificate;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -38,7 +40,7 @@ class FabricAdapterTest {
     final String functionName = "CreateAsset";
 
     @Test
-    void testInvokeSmartContract() throws ExecutionException, InterruptedException {
+    void testInvokeSmartContract() throws ExecutionException, InterruptedException, CertificateException, IOException {
         FabricAdapter adapter = getAdapter();
         final String id1 =  createUniqueId();
         Transaction tx = invokeCreateAsset(adapter, "6669", id1);
@@ -52,7 +54,7 @@ class FabricAdapterTest {
     }
 
     @Test
-    void testSubscribeEvent() throws ExecutionException, InterruptedException {
+    void testSubscribeEvent() throws ExecutionException, InterruptedException, CertificateException, IOException {
         List<Occurrence> occurrences = new ArrayList<>();
         FabricAdapter adapter = getAdapter();
         Observable<Occurrence> obs = adapter.subscribeToEvent(smartContractPath, "CreateAsset", List.of(new Parameter("EventData", stringType, null)), 1.0, null);
@@ -67,7 +69,7 @@ class FabricAdapterTest {
     }
 
     @Test
-    void testQueryEvents() throws ExecutionException, InterruptedException {
+    void testQueryEvents() throws ExecutionException, InterruptedException, CertificateException, IOException {
         FabricAdapter adapter = getAdapter();
         int num= (int)Math.ceil(Math.random()*1000.0);
         invokeCreateAsset(adapter, String.valueOf(num), createUniqueId());
@@ -114,13 +116,17 @@ class FabricAdapterTest {
                 new Parameter("AppraisedValue", stringType, "100"));
     }
 
-    private FabricAdapter getAdapter() {
-        return new FabricAdapter("User1",
-                "C:\\Users\\Ghareeb\\Documents\\GitHub\\Fabric\\fabric-samples-backup\\test-network\\organizations\\peerOrganizations\\org1.example.com",
+    private FabricAdapter getAdapter() throws CertificateException, IOException {
+        FabricAdapter adapter = new FabricAdapter("User1",
+                "C:\\Users\\Ghareeb\\Documents\\GitHub\\TIHBS\\tccsci-demo\\fabric\\fabric-samples\\test-network\\organizations\\peerOrganizations\\org1.example.com",
                 "Org1MSP",
                 "localhost:7051",
                 "peer0.org1.example.com",
                 "");
+        X500Principal cert = adapter.newIdentity().getCertificate().getSubjectX500Principal();
+        log.info(cert);
+
+        return adapter;
     }
 
     private static String createUniqueId() {

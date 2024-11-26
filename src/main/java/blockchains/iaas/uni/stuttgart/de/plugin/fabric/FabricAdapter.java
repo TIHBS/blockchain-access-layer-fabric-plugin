@@ -31,8 +31,6 @@ import lombok.extern.log4j.Log4j2;
 import org.hyperledger.fabric.client.*;
 import org.hyperledger.fabric.client.identity.*;
 import org.hyperledger.fabric.protos.common.BlockchainInfo;
-import org.hyperledger.fabric.protos.common.Envelope;
-import org.hyperledger.fabric.protos.common.Payload;
 
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -89,7 +87,8 @@ public class FabricAdapter implements BlockchainAdapter {
         this.tlsCertPath = CRYPTO_PATH.resolve("peers").resolve(peerAddress).resolve("tls").resolve("ca.crt");
     }
 
-    private static Path getFirstFilePath(Path dirPath) throws IOException {
+
+    static Path getFirstFilePath(Path dirPath) throws IOException {
         try (var keyFiles = Files.list(dirPath)) {
             return keyFiles.findFirst().orElseThrow();
         }
@@ -120,7 +119,7 @@ public class FabricAdapter implements BlockchainAdapter {
                 .build();
     }
 
-    protected Identity newIdentity() throws IOException, CertificateException {
+    protected X509Identity newIdentity() throws IOException, CertificateException {
         try (var certReader = Files.newBufferedReader(getFirstFilePath(this.certDirPath))) {
             var certificate = Identities.readX509Certificate(certReader);
             return new X509Identity(this.mspId, certificate);
