@@ -33,7 +33,7 @@
                             <Plugin-Class>blockchains.iaas.uni.stuttgart.de.plugin.fabric.FabricPlugin</Plugin-Class>
                             <Plugin-Id>fabric-plugin</Plugin-Id>
                             <Plugin-Version>3.0.3</Plugin-Version>
-                            <Plugin-Description>Etheruem plugin</Plugin-Description>
+                            <Plugin-Description>Fabric plugin</Plugin-Description>
                             <Plugin-Provider>Ghareeb Falazi</Plugin-Provider>
                             <Plugin-License>Apache License 2.0</Plugin-License>
                         </manifestEntries>
