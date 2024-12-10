@@ -18,6 +18,7 @@ import blockchains.iaas.uni.stuttgart.de.api.model.*;
 import blockchains.iaas.uni.stuttgart.de.api.utils.BooleanExpressionEvaluator;
 import blockchains.iaas.uni.stuttgart.de.api.utils.SmartContractPathParser;
 import blockchains.iaas.uni.stuttgart.de.plugin.fabric.utils.AsyncManager;
+import com.google.gson.*;
 import com.google.protobuf.InvalidProtocolBufferException;
 import io.grpc.Status;
 import io.grpc.*;
@@ -68,6 +69,7 @@ public class FabricAdapter implements BlockchainAdapter {
     private final String peerEndpoint;
     private final String overrideAuth;
     private final String resourceManagerSmartContractAddress;
+    private final Gson gson = new GsonBuilder().setPrettyPrinting().create();
 
     public FabricAdapter(final String userName, final String cryptoPath,
                          final String mspId,
@@ -373,7 +375,7 @@ public class FabricAdapter implements BlockchainAdapter {
     @Override
     public ResourceManagerSmartContract getResourceManagerSmartContract() throws NotSupportedException {
         Parameter txId = new Parameter("txId",
-                "{ \"Name\": \"txId\", \"Type\": \"string\" }",
+                "{ \"type\": \"string\" }",
                 null);
         List<Parameter> txIdAsList = new ArrayList<>();
         List<Parameter> emptyList = new ArrayList<>();
@@ -382,10 +384,10 @@ public class FabricAdapter implements BlockchainAdapter {
         SmartContractFunction commit = new SmartContractFunction("commit", txIdAsList, emptyList);
         SmartContractFunction abort = new SmartContractFunction("abort", txIdAsList, emptyList);
         Parameter owner = new Parameter("owner",
-                "{ \"Type\": \"string\" }",
+                "{ \"type\": \"string\" }",
                 null);
         Parameter isYes = new Parameter("isYes",
-                "{ \"Type\": \"string\" }",
+                "{ \"type\": \"string\" }",
                 null);
         List<Parameter> votedEventParams = new ArrayList<>();
         votedEventParams.add(owner);
@@ -407,29 +409,34 @@ public class FabricAdapter implements BlockchainAdapter {
         return new FabricResourceManagerSmartContract(this.resourceManagerSmartContractAddress, functions, events);
     }
 
+    private String prettyJson(final byte[] json) {
+        return prettyJson(new String(json, StandardCharsets.UTF_8));
+    }
+
+    private String prettyJson(final String json) {
+        var parsedJson = JsonParser.parseString(json);
+        return gson.toJson(parsedJson);
+    }
+
     private Occurrence handleEvent(ChaincodeEvent event, String eventName, List<Parameter> outputParameters, String filter) throws InvalidScipParameterException {
         // todo try to parse the returned value according to the outputParameters
         if (!event.getEventName().equalsIgnoreCase(eventName)) {
             return null;
         }
 
-        List<Parameter> parameters = new ArrayList<>();
+        JsonObject json = JsonParser.parseString(prettyJson(event.getPayload())).getAsJsonObject();
+        outputParameters = outputParameters == null? new ArrayList<>() : outputParameters;
 
-        if (!outputParameters.isEmpty()) {
-            Parameter parameter = Parameter
-                    .builder()
-                    .name(outputParameters.get(0).getName())
-                    .type(outputParameters.get(0).getType())
-                    .value(new String(event.getPayload(), StandardCharsets.UTF_8))
-                    .build();
-            parameters.add(parameter);
+        for (Parameter parameter : outputParameters) {
+            String value = json.get(parameter.getName()).getAsString();
+            parameter.setValue(value);
         }
 
         try {
-            if (BooleanExpressionEvaluator.evaluate(filter, parameters)) {
+            if (BooleanExpressionEvaluator.evaluate(filter, outputParameters)) {
                 return Occurrence
                         .builder()
-                        .parameters(parameters)
+                        .parameters(outputParameters)
                         .isoTimestamp(DateTimeFormatter.ISO_LOCAL_DATE_TIME.withZone(ZoneId.of("UTC")).format(getCurrentTimestamp()))
                         .build();
             }
